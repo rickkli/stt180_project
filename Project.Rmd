@@ -1,0 +1,203 @@
+---
+title: "Group 6: STT 180 Project"
+output: html_document
+date: "2023-11-16"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, 
+                      message = FALSE, 
+                      warning = FALSE,
+                      comment = NA)
+```
+
+
+```{r}
+library(tidyverse)
+library(ggplot2)
+library(ggiraph)
+```
+
+
+```{r}
+# read in data
+football.data <- read.csv("cfb22.csv")
+
+#cleaning
+football.data <- separate(football.data, col=Win.Loss, into=c('Wins', 'Losses'), sep = '-')
+
+football.data$Wins <- as.integer(football.data$Wins)
+football.data$Losses <- as.integer(football.data$Losses)
+
+# defense data frame
+defense.data <- football.data %>% 
+  select(c(1, 3, 4, 5, 6, 12, 14, 15, 17, 18, 70, 72, 76, 121, 132, 133, 134))
+
+# more cleaning
+football.data <- football.data %>%
+  separate(Team, into = c("Name", "Region"), sep = " \\(", extra = "merge") %>%
+  mutate(Region = gsub("\\)", "", Region))
+
+football.data$Win.Loss <- football.data$Wins - football.data$Losses
+
+sorted <- order(football.data$Win.Loss, decreasing = TRUE)
+new_football <- football.data[sorted,]
+
+# big_10 data frame
+big10_data <- defense.data[grep("Big Ten", defense.data$Team), ]
+```
+
+# Which Conference is the best?
+
+```{r}
+football.data %>%
+  group_by(Region) %>%
+  summarise(avg = mean(Win.Loss)) %>%
+  arrange(desc(avg))
+```
+
+
+# Offense/Defense Correlation Plots
+
+```{r}
+# points per game vs wins plot
+ggplot(football.data, aes(Points.Per.Game, Wins)) + geom_point(aes(color = Off.Rank)) + 
+  geom_smooth(se=FALSE, color = "red")
+
+# yards per game vs wins plot
+ggplot(football.data, aes(Yards.Play.Allowed, Wins)) + geom_point(aes(color = Off.Rank)) + 
+  geom_smooth(se=FALSE, color = "red")
+```
+
+# Defensive Feature Model (full features)
+
+```{r}
+defense_model <- lm(Wins ~ . -X -Team -Losses -Games , data=defense.data)
+summary(defense_model)
+```
+
+# Defensive Feature Model (reduced features)
+
+```{r}
+reduced_defense_model <- step(defense_model, direction = "backward", trace = FALSE)
+summary(reduced_defense_model)
+```
+
+# Big 10 Defensive Analysis Plots
+
+```{r}
+ggplot(data=big10_data, aes(y=Wins/Games, x=Def.Rank)) + 
+  geom_point(aes(color=Team, size=Yards.Play.Allowed)) + 
+  ylab("Win Percent") + xlab("Defensive Rank") + 
+  scale_size_continuous(name="Yards Allowed per Play") + theme(legend.box="vertical",
+                                                               legend.key.size = unit(0.55, 'cm'),
+                                                               legend.title = element_text(size=8))
+```
+
+
+```{r}
+ggplot(data = big10_data, aes(y=reorder(Team, Wins), x=Wins, fill=Def.Rank)) + geom_bar(stat="identity") +
+  scale_fill_fermenter(palette = "Spectral") +
+  ggtitle("Big 10 Conference") +
+  labs(fill="Defensive Rank") +
+  ylab("Team")
+```
+
+# Special Team Analysis Plots
+
+```{r}
+ggplot(data=football.data, aes(x=Kickoff.Return.Yards, y=Wins))+ 
+  geom_point(aes(color=Kickoff.Return.Rank)) +
+  geom_smooth(se=FALSE) +
+  xlab("Kickoff Return Yards") +
+  labs(color="Kickoff Return Rank")
+
+ggplot(data=football.data, aes(x=Kickoff.Return.Yards, y=Wins))+ 
+  geom_point(aes(color=Kickoff.Return.Rank)) +
+  geom_smooth(method="lm", se=FALSE) +
+  xlab("Kickoff Return Yards") +
+  labs(color="Kickoff Return Rank")
+```
+
+```{r}
+ggplot(data=football.data, aes(x=Net.Punt.Return.Yards, y=Wins))+ 
+  geom_point(aes(color=Punt.Return.Rank)) +
+  geom_smooth(se=FALSE) +
+  xlab("Punt Return Yards") +
+  labs(color="Punt Return Rank")
+
+ggplot(data=football.data, aes(x=Net.Punt.Return.Yards, y=Wins))+ 
+  geom_point(aes(color=Punt.Return.Rank)) +
+  geom_smooth(method="lm", se=FALSE) +
+  xlab("Punt Return Yards") +
+  labs(color="Punt Return Rank")
+```
+
+
+# Interactive Offensive Plots
+
+```{r}
+ploti <- ggplot(football.data, aes(x = Points.Per.Game, y = Wins)) +
+  geom_point_interactive(aes(fill = Region, size = Off.Rank, tooltip = Name),color = "black", shape = 21) + 
+  scale_size(range=c(10, 3)) +
+  theme_bw() +
+  guides(fill = guide_legend(override.aes = list(size=5))) +
+  guides(size = guide_legend(override.aes = list(fill = "black", color="black")))
+
+girafe(code = print(ploti))
+```
+
+
+```{r}
+ploti <- ggplot(football.data, aes(x = Yards.Play.Allowed, y = Wins)) +
+  geom_point_interactive(aes(fill = Region, size = Off.Rank, tooltip = Name),color = "black", shape = 21) + 
+  scale_size(range=c(10, 3)) +
+  theme_bw() +
+  guides(fill = guide_legend(override.aes = list(size=5))) +
+  guides(size = guide_legend(override.aes = list(fill = "black", color="black")))
+
+girafe(code = print(ploti))
+```
+
+# Predicting for next season
+
+```{r}
+library(caret)
+library(randomForest)
+library(dplyr)
+library(caTools)
+library(ROCR)
+library(Metrics)
+library(corrplot)
+library(e1071)
+```
+
+```{r}
+set.seed(123)
+
+selected_columns <- c("Losses", "Off.Yards", "Def.Rank", "Passing.Off.Rank", "Rushing.Off.Rank", "Points.Per.Game", "Sacks", "Turnover.Margin")
+
+
+selected_data <- new_football[, c("Wins", selected_columns)]
+
+split <- sample.split(selected_data$Wins, SplitRatio = 0.7)
+train_data <- subset(selected_data, split == TRUE)
+test_data <- subset(selected_data, split == FALSE)
+
+model <- lm(Wins ~ ., data = train_data)
+predictions <- predict(model, newdata = test_data)
+rmse <- sqrt(mean((test_data$Wins - predictions)^2))
+
+correlation_matrix <- cor(selected_data)
+corrplot(correlation_matrix, method = "color")
+
+```
+
+```{r}
+new_season_data <- data.frame(Losses = 3, Off.Yards = 5000, Def.Rank = 30, Passing.Off.Rank = 33,
+  Rushing.Off.Rank = 50, Points.Per.Game = 20, Sacks = 6, Turnover.Margin = 3)
+
+new_season_predictions <- predict(model, newdata = new_season_data)
+new_season_predictions
+```
+
